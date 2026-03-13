@@ -21,9 +21,9 @@ class NetworkConnectivityPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         
-        # 数据存储路径 - 使用 StarTools.get_data_dir() 获取插件数据目录
-        from astrbot.core.utils.t2tools import StarTools
-        self.data_dir = StarTools.get_data_dir("network_connectivity_check")
+        # 数据存储路径 - 使用 AstrBot 标准数据目录
+        # 数据目录位于 AstrBot/data/plugin_network_connectivity_check/
+        self.data_dir = Path("data") / "plugin_network_connectivity_check"
         self.state_file = self.data_dir / "state.json"
         self.history_file = self.data_dir / "history.json"
         
