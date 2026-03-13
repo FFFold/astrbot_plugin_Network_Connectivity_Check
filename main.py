@@ -506,15 +506,22 @@ class NetworkConnectivityPlugin(Star):
             # ===== 检测失败的情况 =====
             error_msg = result.get("error") or "连接超时或无法访问"
             
-            if status_changed and notify_on_status_change:
-                # 状态从成功 变为 失败，且开启了状态变化通知
-                # 受"连续失败"限制，避免偶发性波动导致误报
+            if notify_on_status_change:
+                # 开启了状态变化通知
+                # 需要满足：1) 达到阈值；2) 首次达到阈值（状态刚变化 或 连续失败次数刚好等于阈值）
                 if state["consecutive_failures"] >= consecutive_failures_threshold:
-                    should_notify = True
-                    notify_reason = "状态变化（异常，达到阈值）"
-                    message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
+                    # 检查是否是首次达到阈值：状态变化了，或者连续失败次数刚好等于阈值
+                    is_first_time_reaching_threshold = status_changed or \
+                        (state["consecutive_failures"] == consecutive_failures_threshold)
+                    
+                    if is_first_time_reaching_threshold:
+                        should_notify = True
+                        notify_reason = "状态变化（异常，首次达到阈值）"
+                        message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
+                    else:
+                        logger.debug(f"[{target_name}] 已达到阈值但非首次，跳过通知")
                 else:
-                    logger.debug(f"[{target_name}] 状态变为失败，但连续失败次数 {state['consecutive_failures']} "
+                    logger.debug(f"[{target_name}] 连续失败 {state['consecutive_failures']} "
                                 f"未达到阈值 {consecutive_failures_threshold}，暂不通知")
             elif notify_on_failure:
                 # 开启了每次失败都通知（不受限制）
