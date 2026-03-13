@@ -93,6 +93,15 @@ class NetworkConnectivityPlugin(Star):
             # 深拷贝避免修改原始配置
             processed = dict(target)
             
+            # 跳过空名字的目标
+            target_name = processed.get("name", "").strip()
+            if not target_name:
+                logger.warning(f"跳过空名字的目标配置: {processed}")
+                continue
+            
+            # 确保 name 是有效的
+            processed["name"] = target_name
+            
             # 如果没有启用自定义设置，使用全局设置
             if not processed.get("custom_settings", False):
                 processed["interval"] = global_interval
@@ -197,7 +206,11 @@ class NetworkConnectivityPlugin(Star):
     
     async def _monitor_target(self, target: Dict):
         """监测单个目标的后台任务"""
-        target_name = target.get("name", "unknown")
+        target_name = target.get("name", "").strip()
+        if not target_name:
+            target_name = "未命名目标"
+            logger.warning("监测任务启动时发现空名字目标，使用默认名称")
+        
         interval = target.get("interval", 300)
         
         logger.info(f"监测任务 {target_name} 已启动，检测间隔: {interval} 秒")
@@ -228,7 +241,11 @@ class NetworkConnectivityPlugin(Star):
     
     async def _check_target(self, target: Dict) -> Dict:
         """检测单个目标"""
-        target_name = target.get("name", "unknown")
+        target_name = target.get("name", "").strip()
+        if not target_name:
+            target_name = "未命名目标"
+            logger.warning(f"检测到空名字目标，使用默认名称")
+        
         url = target.get("url", "")
         method = target.get("method", "http")
         timeout = target.get("timeout", 10)
@@ -236,6 +253,15 @@ class NetworkConnectivityPlugin(Star):
         
         logger.debug(f"开始检测目标: {target_name}, URL: {url}, 方法: {method}, "
                     f"超时: {timeout}s, 最大重试: {retry}次")
+        
+        # 确保状态字典存在
+        if target_name not in self.target_states:
+            self.target_states[target_name] = {
+                "last_status": None,
+                "consecutive_failures": 0,
+                "last_check_time": None,
+                "last_response_time": None
+            }
         
         state = self.target_states[target_name]
         result = {
@@ -270,9 +296,12 @@ class NetworkConnectivityPlugin(Star):
                 result["success"] = success
                 
                 if success:
+                    result["error"] = None  # 成功时清除错误
                     logger.debug(f"[{target_name}] 检测成功，响应时间: {result['response_time']}ms")
                     break  # 成功则跳出重试
                 else:
+                    # 检测失败时设置错误信息
+                    result["error"] = f"{method.upper()} 检测失败（状态码异常或连接被拒绝）"
                     logger.debug(f"[{target_name}] 检测失败，准备重试...")
                     if attempt < retry:
                         await asyncio.sleep(1)  # 重试前等待1秒
@@ -374,7 +403,21 @@ class NetworkConnectivityPlugin(Star):
     
     async def _update_target_state(self, target: Dict, result: Dict):
         """更新目标状态并决定是否发送通知"""
-        target_name = target.get("name", "unknown")
+        # 使用 target 参数获取名字，确保不为空
+        target_name = target.get("name", "").strip()
+        if not target_name:
+            target_name = "未命名目标"
+            logger.warning(f"检测到空名字目标，使用默认名称: {result}")
+        
+        # 确保状态字典存在
+        if target_name not in self.target_states:
+            self.target_states[target_name] = {
+                "last_status": None,
+                "consecutive_failures": 0,
+                "last_check_time": None,
+                "last_response_time": None
+            }
+        
         state = self.target_states[target_name]
         notification_settings = self._get_notification_settings()
         
@@ -419,7 +462,7 @@ class NetworkConnectivityPlugin(Star):
             if state["consecutive_failures"] >= consecutive_failures_threshold:
                 if prev_status is not False or notify_on_failure:
                     should_notify = True
-                    error_msg = result.get("error", "未知错误")
+                    error_msg = result.get("error") or "连接超时或无法访问"
                     message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
                     logger.info(f"[{target_name}] 网络异常且达到报警阈值，准备发送通知")
         
