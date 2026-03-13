@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import re
 from datetime import datetime
 from typing import Dict, List, Any
 from pathlib import Path
@@ -8,7 +9,7 @@ import platform
 
 import aiohttp
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
@@ -22,7 +23,6 @@ class NetworkConnectivityPlugin(Star):
         self.config = config or {}
         
         # 数据存储路径 - 使用 StarTools.get_data_dir() 获取插件数据目录
-        from astrbot.core.star.star_tools import StarTools
         self.data_dir = StarTools.get_data_dir("network_connectivity_check")
         self.state_file = self.data_dir / "state.json"
         self.history_file = self.data_dir / "history.json"
@@ -37,6 +37,9 @@ class NetworkConnectivityPlugin(Star):
         # 后台任务
         self.monitor_tasks: Dict[str, asyncio.Task] = {}
         self.running = False
+        
+        # HTTP session（在 initialize 中创建，复用连接池）
+        self.session: aiohttp.ClientSession | None = None
         
     def _load_state(self) -> Dict[str, Any]:
         """加载目标状态"""
@@ -172,6 +175,12 @@ class NetworkConnectivityPlugin(Star):
             return
         
         self.running = True
+        
+        # 创建全局 HTTP session（复用连接池）
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+            logger.debug("已创建 HTTP ClientSession")
+        
         targets = self._get_target_config()
         notify_targets = self._get_notify_targets()
         
@@ -217,6 +226,11 @@ class NetworkConnectivityPlugin(Star):
             logger.info(f"停止监测任务: {target_name}")
         
         self.monitor_tasks.clear()
+        
+        # 关闭 HTTP session
+        if self.session and not self.session.closed:
+            await self.session.close()
+            logger.debug("已关闭 HTTP ClientSession")
         
         # 保存状态和历史
         self._save_state()
@@ -355,39 +369,44 @@ class NetworkConnectivityPlugin(Star):
         ssl_context = None if ssl_verify else False
         last_error = ""
         
+        # 使用全局 session（复用连接池）
+        session = self.session
+        if session is None or session.closed:
+            logger.warning("HTTP session 未初始化或已关闭，创建临时 session")
+            session = aiohttp.ClientSession()
+        
         try:
-            async with aiohttp.ClientSession() as session:
-                # 先尝试 HEAD 请求
-                try:
-                    logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s, SSL验证: {ssl_verify}")
-                    async with session.head(url, timeout=timeout, ssl=ssl_context) as resp:
-                        logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
-                        if 200 <= resp.status < 400:
-                            return True, ""
-                        else:
-                            last_error = f"HTTP 状态码异常: {resp.status}"
-                except asyncio.TimeoutError:
-                    last_error = "HTTP 请求超时"
-                except aiohttp.ClientError as e:
-                    last_error = f"HTTP 连接错误: {type(e).__name__}"
-                except Exception as e:
-                    last_error = f"HTTP 请求异常: {str(e)[:50]}"
-                
-                # HEAD 失败时尝试 GET
-                try:
-                    logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
-                    async with session.get(url, timeout=timeout, ssl=ssl_context) as resp:
-                        logger.debug(f"HTTP GET 响应状态码: {resp.status}")
-                        if 200 <= resp.status < 400:
-                            return True, ""
-                        else:
-                            return False, f"HTTP 状态码异常: {resp.status}"
-                except asyncio.TimeoutError:
-                    return False, "HTTP 请求超时"
-                except aiohttp.ClientError as e:
-                    return False, f"HTTP 连接被拒绝或无法访问"
-                except Exception as e:
-                    return False, f"HTTP 请求失败: {str(e)[:50]}"
+            # 先尝试 HEAD 请求
+            try:
+                logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s, SSL验证: {ssl_verify}")
+                async with session.head(url, timeout=timeout, ssl=ssl_context) as resp:
+                    logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
+                    if 200 <= resp.status < 400:
+                        return True, ""
+                    else:
+                        last_error = f"HTTP 状态码异常: {resp.status}"
+            except asyncio.TimeoutError:
+                last_error = "HTTP 请求超时"
+            except aiohttp.ClientError as e:
+                last_error = f"HTTP 连接错误: {type(e).__name__}"
+            except Exception as e:
+                last_error = f"HTTP 请求异常: {str(e)[:50]}"
+            
+            # HEAD 失败时尝试 GET
+            try:
+                logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
+                async with session.get(url, timeout=timeout, ssl=ssl_context) as resp:
+                    logger.debug(f"HTTP GET 响应状态码: {resp.status}")
+                    if 200 <= resp.status < 400:
+                        return True, ""
+                    else:
+                        return False, f"HTTP 状态码异常: {resp.status}"
+            except asyncio.TimeoutError:
+                return False, "HTTP 请求超时"
+            except aiohttp.ClientError as e:
+                return False, f"HTTP 连接被拒绝或无法访问"
+            except Exception as e:
+                return False, f"HTTP 请求失败: {str(e)[:50]}"
         except Exception as e:
             return False, f"HTTP 会话失败: {str(e)[:50]}"
     
@@ -413,6 +432,15 @@ class NetworkConnectivityPlugin(Star):
             elif ":" in host:
                 # 普通 host:port 格式，去掉端口
                 host = host.split(":")[0]
+            
+            # 验证 host 参数，防止命令注入（确保不以 - 开头）
+            if not host or host.startswith("-"):
+                return False, f"Ping 主机地址无效或包含非法字符: '{host}'"
+            
+            # 进一步验证：只允许合法的域名、IPv4、IPv6 字符
+            # 支持字母数字、点、冒号（IPv6）、连字符（域名）
+            if not re.match(r'^[a-zA-Z0-9\.\:\-]+$', host):
+                return False, f"Ping 主机地址包含非法字符: '{host}'"
             
             logger.debug(f"Ping 检测: {host} (原始: {original_host}), 超时: {timeout}s")
             
