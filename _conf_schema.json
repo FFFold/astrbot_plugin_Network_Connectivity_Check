@@ -83,22 +83,28 @@
     "type": "object",
     "hint": "检测结果的通知策略设置",
     "items": {
-      "notify_on_success": {
-        "description": "连通时是否通知",
+      "notify_on_status_change": {
+        "description": "状态变化时通知",
         "type": "bool",
-        "hint": "开启后每次检测成功都会发送通知（建议关闭，避免刷屏）",
+        "hint": "开启后，当网络状态发生变化时推送通知（如从正常变为异常，或从异常恢复）。建议开启以及时了解网络状况变化",
+        "default": true
+      },
+      "notify_on_success": {
+        "description": "每次成功都通知",
+        "type": "bool",
+        "hint": "开启后每次检测成功都会发送通知（会刷屏，建议仅在调试时开启）",
         "default": false
       },
       "notify_on_failure": {
-        "description": "失败时是否通知",
+        "description": "每次失败都通知",
         "type": "bool",
-        "hint": "开启后检测失败时发送通知",
-        "default": true
+        "hint": "开启后每次检测失败都发送通知（会刷屏，建议配合'连续失败几次才报警'使用或仅在调试时开启）",
+        "default": false
       },
       "consecutive_failures": {
         "description": "连续失败几次才报警",
         "type": "int",
-        "hint": "避免偶发性网络波动导致误报",
+        "hint": "当'每次失败都通知'关闭时，连续失败达到此次数才发送通知。用于避免偶发性网络波动导致误报",
         "default": 2
       },
       "silent_hours_start": {

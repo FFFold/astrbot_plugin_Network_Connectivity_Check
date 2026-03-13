@@ -280,13 +280,13 @@ class NetworkConnectivityPlugin(Star):
                 
                 if method == "http":
                     logger.debug(f"[{target_name}] HTTP 检测尝试 {attempt + 1}/{retry + 1}")
-                    success = await self._check_http(url, timeout)
+                    success, error_msg = await self._check_http(url, timeout)
                 elif method == "ping":
                     logger.debug(f"[{target_name}] Ping 检测尝试 {attempt + 1}/{retry + 1}")
-                    success = await self._check_ping(url, timeout)
+                    success, error_msg = await self._check_ping(url, timeout)
                 elif method == "tcp":
                     logger.debug(f"[{target_name}] TCP 检测尝试 {attempt + 1}/{retry + 1}")
-                    success = await self._check_tcp(url, timeout)
+                    success, error_msg = await self._check_tcp(url, timeout)
                 else:
                     result["error"] = f"未知的检测方法: {method}"
                     logger.error(f"[{target_name}] {result['error']}")
@@ -301,13 +301,13 @@ class NetworkConnectivityPlugin(Star):
                     break  # 成功则跳出重试
                 else:
                     # 检测失败时设置错误信息
-                    result["error"] = f"{method.upper()} 检测失败（状态码异常或连接被拒绝）"
-                    logger.debug(f"[{target_name}] 检测失败，准备重试...")
+                    result["error"] = error_msg or f"{method.upper()} 检测失败"
+                    logger.debug(f"[{target_name}] 检测失败: {error_msg}，准备重试...")
                     if attempt < retry:
                         await asyncio.sleep(1)  # 重试前等待1秒
                     
             except Exception as e:
-                result["error"] = str(e)
+                result["error"] = f"检测异常: {str(e)[:100]}"
                 logger.debug(f"[{target_name}] 检测异常: {e}")
                 if attempt < retry:
                     await asyncio.sleep(1)  # 重试前等待1秒
@@ -327,28 +327,44 @@ class NetworkConnectivityPlugin(Star):
         
         return result
     
-    async def _check_http(self, url: str, timeout: int) -> bool:
-        """HTTP 检测"""
+    async def _check_http(self, url: str, timeout: int) -> tuple[bool, str]:
+        """HTTP 检测，返回 (成功状态, 错误信息)"""
+        last_error = ""
         try:
             logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s")
             async with aiohttp.ClientSession() as session:
                 async with session.head(url, timeout=timeout, ssl=False) as resp:
                     logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
-                    return 200 <= resp.status < 400
+                    if 200 <= resp.status < 400:
+                        return True, ""
+                    else:
+                        last_error = f"HTTP 状态码异常: {resp.status}"
+        except asyncio.TimeoutError:
+            last_error = "HTTP 请求超时"
+        except aiohttp.ClientError as e:
+            last_error = f"HTTP 连接错误: {type(e).__name__}"
         except Exception as e:
-            logger.debug(f"HTTP HEAD 失败: {e}，尝试 GET 请求")
-            # HEAD 失败时尝试 GET
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=timeout, ssl=False) as resp:
-                        logger.debug(f"HTTP GET 响应状态码: {resp.status}")
-                        return 200 <= resp.status < 400
-            except Exception as e2:
-                logger.debug(f"HTTP GET 也失败: {e2}")
-                return False
+            last_error = f"HTTP 请求异常: {str(e)[:50]}"
+        
+        # HEAD 失败时尝试 GET
+        try:
+            logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout, ssl=False) as resp:
+                    logger.debug(f"HTTP GET 响应状态码: {resp.status}")
+                    if 200 <= resp.status < 400:
+                        return True, ""
+                    else:
+                        return False, f"HTTP 状态码异常: {resp.status}"
+        except asyncio.TimeoutError:
+            return False, "HTTP 请求超时"
+        except aiohttp.ClientError as e:
+            return False, f"HTTP 连接被拒绝或无法访问"
+        except Exception as e:
+            return False, f"HTTP 请求失败: {str(e)[:50]}"
     
-    async def _check_ping(self, host: str, timeout: int) -> bool:
-        """Ping 检测"""
+    async def _check_ping(self, host: str, timeout: int) -> tuple[bool, str]:
+        """Ping 检测，返回 (成功状态, 错误信息)"""
         try:
             # 移除协议头
             original_host = host
@@ -367,13 +383,19 @@ class NetworkConnectivityPlugin(Star):
             await asyncio.wait_for(proc.wait(), timeout=timeout + 2)
             success = proc.returncode == 0
             logger.debug(f"Ping 结果: {host} - {'成功' if success else '失败'} (returncode: {proc.returncode})")
-            return success
+            
+            if success:
+                return True, ""
+            else:
+                return False, f"Ping 失败（主机不可达或请求超时）"
+        except asyncio.TimeoutError:
+            return False, "Ping 超时"
         except Exception as e:
             logger.debug(f"Ping 异常: {e}")
-            return False
+            return False, f"Ping 执行失败: {str(e)[:50]}"
     
-    async def _check_tcp(self, url: str, timeout: int) -> bool:
-        """TCP 连接检测"""
+    async def _check_tcp(self, url: str, timeout: int) -> tuple[bool, str]:
+        """TCP 连接检测，返回 (成功状态, 错误信息)"""
         try:
             # 解析主机和端口
             if url.startswith(("http://", "https://")):
@@ -396,10 +418,16 @@ class NetworkConnectivityPlugin(Star):
             writer.close()
             await writer.wait_closed()
             logger.debug(f"TCP 连接成功: {host}:{port}")
-            return True
+            return True, ""
+        except asyncio.TimeoutError:
+            return False, f"TCP 连接超时（端口 {port} 无响应）"
+        except ConnectionRefusedError:
+            return False, f"TCP 连接被拒绝（端口 {port} 已关闭）"
+        except OSError as e:
+            return False, f"TCP 连接失败: {str(e)[:50]}"
         except Exception as e:
             logger.debug(f"TCP 连接失败: {host}:{port} - {e}")
-            return False
+            return False, f"TCP 连接失败: {str(e)[:50]}"
     
     async def _update_target_state(self, target: Dict, result: Dict):
         """更新目标状态并决定是否发送通知"""
@@ -444,33 +472,68 @@ class NetworkConnectivityPlugin(Star):
         # 保存状态
         self._save_state()
         
-        # 判断是否发送通知
-        should_notify = False
-        message = ""
+        # 获取通知设置
+        notify_on_status_change = notification_settings.get("notify_on_status_change", True)
         notify_on_success = notification_settings.get("notify_on_success", False)
-        notify_on_failure = notification_settings.get("notify_on_failure", True)
+        notify_on_failure = notification_settings.get("notify_on_failure", False)
         consecutive_failures_threshold = notification_settings.get("consecutive_failures", 2)
         
-        if new_status and prev_status is False:
-            # 恢复通知
-            if notify_on_success:
-                should_notify = True
-                message = f"✅ [{target_name}] 网络已恢复正常！\n响应时间: {result['response_time']}ms"
-                logger.info(f"[{target_name}] 网络恢复，准备发送通知")
-        elif not new_status:
-            # 失败通知
-            if state["consecutive_failures"] >= consecutive_failures_threshold:
-                if prev_status is not False or notify_on_failure:
-                    should_notify = True
-                    error_msg = result.get("error") or "连接超时或无法访问"
-                    message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
-                    logger.info(f"[{target_name}] 网络异常且达到报警阈值，准备发送通知")
+        # 判断状态是否发生变化（None→True/False 也算变化）
+        status_changed = (prev_status is not None and new_status != prev_status) or \
+                        (prev_status is None)  # 首次检测也算状态变化
         
+        should_notify = False
+        message = ""
+        notify_reason = ""  # 记录通知原因，用于日志
+        
+        if new_status:
+            # ===== 检测成功的情况 =====
+            if status_changed and notify_on_status_change:
+                # 状态从失败/未知 变为 成功，且开启了状态变化通知
+                should_notify = True
+                notify_reason = "状态变化（恢复）"
+                if prev_status is False:
+                    message = f"✅ [{target_name}] 网络已恢复正常！\n响应时间: {result['response_time']}ms\n（已从异常状态恢复）"
+                else:
+                    message = f"✅ [{target_name}] 网络检测正常\n响应时间: {result['response_time']}ms"
+            elif notify_on_success:
+                # 开启了每次成功都通知
+                should_notify = True
+                notify_reason = "每次成功通知"
+                message = f"✅ [{target_name}] 网络检测正常\n响应时间: {result['response_time']}ms"
+        else:
+            # ===== 检测失败的情况 =====
+            error_msg = result.get("error") or "连接超时或无法访问"
+            
+            if status_changed and notify_on_status_change:
+                # 状态从成功/未知 变为 失败，且开启了状态变化通知
+                should_notify = True
+                notify_reason = "状态变化（异常）"
+                message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
+            elif notify_on_failure:
+                # 开启了每次失败都通知
+                should_notify = True
+                notify_reason = "每次失败通知"
+                message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
+            elif state["consecutive_failures"] == consecutive_failures_threshold:
+                # 连续失败达到阈值（且没有开启上面两种通知）
+                should_notify = True
+                notify_reason = f"连续失败{consecutive_failures_threshold}次"
+                message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次\n（达到报警阈值）"
+        
+        # 发送通知
         if should_notify:
             if self._is_silent_hours():
-                logger.info(f"[{target_name}] 当前处于免打扰时段，跳过通知发送")
+                logger.info(f"[{target_name}] 应发送通知（{notify_reason}），但当前处于免打扰时段，跳过")
             else:
+                logger.info(f"[{target_name}] 发送通知: {notify_reason}")
                 await self._send_notification(message)
+        else:
+            logger.debug(f"[{target_name}] 不发送通知: 状态变化={status_changed}, "
+                        f"成功={new_status}, "
+                        f"状态变化通知={notify_on_status_change}, "
+                        f"成功通知={notify_on_success}, "
+                        f"失败通知={notify_on_failure}")
     
     async def _send_notification(self, message: str):
         """发送通知到所有配置的通知目标"""
