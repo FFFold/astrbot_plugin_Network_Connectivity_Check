@@ -89,6 +89,12 @@
         "hint": "开启后，当网络状态发生变化时推送通知。从异常恢复时立即通知；从正常变为异常时，需满足下方'连续失败阈值'才通知（避免误报）",
         "default": true
       },
+      "consecutive_failures": {
+        "description": "状态变化通知的连续失败阈值",
+        "type": "int",
+        "hint": "仅影响'状态变化时通知'。当网络从正常变为异常时，需要连续失败达到此次数才会发送通知。用于避免偶发性网络波动导致的误报",
+        "default": 2
+      },
       "notify_on_success": {
         "description": "每次成功都通知",
         "type": "bool",
@@ -100,12 +106,6 @@
         "type": "bool",
         "hint": "开启后每次检测失败都发送通知（会刷屏，建议仅在调试时开启）。此选项不受'连续失败阈值'限制",
         "default": false
-      },
-      "consecutive_failures": {
-        "description": "状态变化通知的连续失败阈值",
-        "type": "int",
-        "hint": "仅影响'状态变化时通知'。当网络从正常变为异常时，需要连续失败达到此次数才会发送通知。用于避免偶发性网络波动导致的误报",
-        "default": 2
       },
       "silent_hours_start": {
         "description": "免打扰开始时间(小时)",
