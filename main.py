@@ -68,7 +68,7 @@ class NetworkConnectivityPlugin(Star):
         """保存检测历史"""
         try:
             # 限制历史记录数量
-            max_history = self.config.get("global_settings", {}).get("max_history", 100)
+            max_history = self.config.get("advanced_settings", {}).get("max_history", 100)
             for target_name in self.detection_history:
                 if len(self.detection_history[target_name]) > max_history:
                     self.detection_history[target_name] = self.detection_history[target_name][-max_history:]
@@ -79,18 +79,43 @@ class NetworkConnectivityPlugin(Star):
             logger.error(f"保存历史文件失败: {e}")
     
     def _get_target_config(self) -> List[Dict]:
-        """获取监测目标配置"""
-        return self.config.get("targets", [])
+        """获取监测目标配置（返回处理后的目标列表）"""
+        targets = self.config.get("targets", [])
+        processed_targets = []
+        
+        # 获取全局检测设置
+        detection_settings = self.config.get("detection_settings", {})
+        global_interval = detection_settings.get("interval", 300)
+        global_timeout = detection_settings.get("timeout", 10)
+        global_retry = detection_settings.get("retry", 3)
+        
+        for target in targets:
+            # 深拷贝避免修改原始配置
+            processed = dict(target)
+            
+            # 如果没有启用自定义设置，使用全局设置
+            if not processed.get("custom_settings", False):
+                processed["interval"] = global_interval
+                processed["timeout"] = global_timeout
+                processed["retry"] = global_retry
+            
+            processed_targets.append(processed)
+        
+        return processed_targets
     
     def _get_notify_targets(self) -> List[Dict]:
         """获取通知目标列表"""
         return self.config.get("notify_targets", [])
     
+    def _get_notification_settings(self) -> Dict:
+        """获取通知全局设置"""
+        return self.config.get("notification_settings", {})
+    
     def _is_silent_hours(self) -> bool:
         """检查当前是否在免打扰时段"""
-        global_settings = self.config.get("global_settings", {})
-        start = global_settings.get("silent_hours_start", -1)
-        end = global_settings.get("silent_hours_end", 7)
+        notification_settings = self._get_notification_settings()
+        start = notification_settings.get("silent_hours_start", -1)
+        end = notification_settings.get("silent_hours_end", 7)
         
         if start < 0:
             return False
@@ -101,7 +126,7 @@ class NetworkConnectivityPlugin(Star):
         else:  # 跨天的情况，如 22:00 - 07:00
             return current_hour >= start or current_hour < end
     
-    def _add_umo_to_notify_targets(self, umo: str, description: str = ""):
+    def _add_umo_to_notify_targets(self, umo: str, description: str = "") -> bool:
         """添加UMO到通知目标列表"""
         notify_targets = self._get_notify_targets()
         
@@ -113,7 +138,7 @@ class NetworkConnectivityPlugin(Star):
         # 添加到列表
         notify_targets.append({
             "umo": umo,
-            "description": description or f"自动添加于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            "description": description or f"添加于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         })
         
         # 更新配置
@@ -301,6 +326,7 @@ class NetworkConnectivityPlugin(Star):
         """更新目标状态并决定是否发送通知"""
         target_name = target.get("name", "unknown")
         state = self.target_states[target_name]
+        notification_settings = self._get_notification_settings()
         
         # 更新基本信息
         state["last_check_time"] = result["timestamp"]
@@ -322,9 +348,9 @@ class NetworkConnectivityPlugin(Star):
         
         # 判断是否发送通知
         should_notify = False
-        notify_on_success = target.get("notify_on_success", False)
-        notify_on_failure = target.get("notify_on_failure", True)
-        consecutive_failures_threshold = target.get("consecutive_failures", 2)
+        notify_on_success = notification_settings.get("notify_on_success", False)
+        notify_on_failure = notification_settings.get("notify_on_failure", True)
+        consecutive_failures_threshold = notification_settings.get("consecutive_failures", 2)
         
         if new_status and prev_status is False:
             # 恢复通知
@@ -367,20 +393,32 @@ class NetworkConnectivityPlugin(Star):
         """网络监测指令组"""
         pass
     
-    @net.command("check")
-    async def net_check(self, event: AstrMessageEvent, target_name: str = ""):
-        """手动执行一次网络检测\n目标：要检测的目标名称，留空则检测所有目标"""
-        # 自动添加当前UMO到通知目标
+    @net.command("addme")
+    async def net_addme(self, event: AstrMessageEvent, description: str = ""):
+        """将当前聊天添加到通知目标列表
+描述：可选的描述信息，用于标识此通知目标"""
         umo = event.unified_msg_origin
         group_id = event.get_group_id()
+        sender_id = event.get_sender_id()
         
-        if group_id:
-            desc = f"群聊 {group_id}"
+        # 自动生成描述
+        if not description:
+            if group_id:
+                description = f"群聊 {group_id}"
+            else:
+                description = f"用户 {sender_id}"
+        
+        added = self._add_umo_to_notify_targets(umo, description)
+        
+        if added:
+            yield event.plain_result(f"✅ 已添加此聊天到通知目标列表\nUMO: {umo}\n描述: {description}")
         else:
-            desc = f"用户 {event.get_sender_id()}"
-        
-        added = self._add_umo_to_notify_targets(umo, desc)
-        
+            yield event.plain_result("ℹ️ 此聊天已在通知目标列表中")
+    
+    @net.command("check")
+    async def net_check(self, event: AstrMessageEvent, target_name: str = ""):
+        """手动执行一次网络检测
+目标：要检测的目标名称，留空则检测所有目标"""
         targets = self._get_target_config()
         
         if not targets:
@@ -413,11 +451,7 @@ class NetworkConnectivityPlugin(Star):
             error = f"\n错误: {r['error']}" if r.get("error") else ""
             messages.append(f"[{r['target']}]{resp_time} - {status}{error}")
         
-        result_text = "\n".join(messages)
-        if added:
-            result_text += "\n\n💡 已自动将此聊天添加到通知目标列表"
-        
-        yield event.plain_result(result_text)
+        yield event.plain_result("\n".join(messages))
     
     @net.command("status")
     async def net_status(self, event: AstrMessageEvent):
@@ -482,7 +516,9 @@ class NetworkConnectivityPlugin(Star):
     
     @net.command("history")
     async def net_history(self, event: AstrMessageEvent, target_name: str = "", count: int = 5):
-        """查看指定目标的检测历史\n目标：目标名称\n数量：显示最近几条记录（默认5条）"""
+        """查看指定目标的检测历史
+目标：目标名称
+数量：显示最近几条记录（默认5条）"""
         if count < 1 or count > 20:
             count = 5
         

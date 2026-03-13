@@ -1,39 +1,66 @@
 {
   "targets": {
     "description": "要监测的网络目标列表",
-    "type": "list",
-    "hint": "配置需要监测的网络目标，每个目标可独立设置检测方式和通知策略",
-    "default": [
-      {
-        "name": "Google",
-        "url": "https://www.google.com",
-        "method": "http",
-        "interval": 300,
-        "timeout": 10,
-        "retry": 3,
-        "notify_on_success": false,
-        "notify_on_failure": true,
-        "consecutive_failures": 2
+    "type": "template_list",
+    "hint": "配置需要监测的网络目标，每个目标可设置名称、地址和检测方式",
+    "templates": {
+      "target": {
+        "name": "监测目标",
+        "hint": "一个要监测的网络目标",
+        "items": {
+          "name": {
+            "description": "目标名称",
+            "type": "string",
+            "hint": "用于标识这个监测目标，如 Google、百度等"
+          },
+          "url": {
+            "description": "目标地址",
+            "type": "string",
+            "hint": "要检测的网址或IP，如 https://www.google.com 或 8.8.8.8"
+          },
+          "method": {
+            "description": "检测方式",
+            "type": "string",
+            "hint": "http: HTTP请求检测; ping: ICMP ping检测; tcp: TCP端口连接检测",
+            "options": ["http", "ping", "tcp"],
+            "default": "http"
+          },
+          "custom_settings": {
+            "description": "自定义设置（可选）",
+            "type": "bool",
+            "hint": "是否为此目标单独设置检测参数（覆盖全局设置）",
+            "default": false
+          },
+          "interval": {
+            "description": "检测间隔(秒)",
+            "type": "int",
+            "hint": "覆盖全局设置的检测间隔",
+            "default": 300,
+            "invisible": true
+          },
+          "timeout": {
+            "description": "超时时间(秒)",
+            "type": "int",
+            "hint": "覆盖全局设置的超时时间",
+            "default": 10,
+            "invisible": true
+          },
+          "retry": {
+            "description": "失败重试次数",
+            "type": "int",
+            "hint": "覆盖全局设置的重试次数",
+            "default": 3,
+            "invisible": true
+          }
+        }
       }
-    ],
+    }
+  },
+  "detection_settings": {
+    "description": "检测全局设置",
+    "type": "object",
+    "hint": "所有监测目标的默认检测参数",
     "items": {
-      "name": {
-        "description": "目标名称",
-        "type": "string",
-        "hint": "用于标识这个监测目标，如 Google、百度等"
-      },
-      "url": {
-        "description": "目标地址",
-        "type": "string",
-        "hint": "要检测的网址或IP，如 https://www.google.com 或 8.8.8.8"
-      },
-      "method": {
-        "description": "检测方式",
-        "type": "string",
-        "hint": "http: HTTP请求检测; ping: ICMP ping检测; tcp: TCP端口连接检测",
-        "options": ["http", "ping", "tcp"],
-        "default": "http"
-      },
       "interval": {
         "description": "检测间隔(秒)",
         "type": "int",
@@ -51,7 +78,14 @@
         "type": "int",
         "hint": "检测失败时的重试次数，设为0则不重试",
         "default": 3
-      },
+      }
+    }
+  },
+  "notification_settings": {
+    "description": "通知全局设置",
+    "type": "object",
+    "hint": "检测结果的通知策略设置",
+    "items": {
       "notify_on_success": {
         "description": "连通时是否通知",
         "type": "bool",
@@ -69,36 +103,11 @@
         "type": "int",
         "hint": "避免偶发性网络波动导致误报",
         "default": 2
-      }
-    }
-  },
-  "notify_targets": {
-    "description": "通知目标列表",
-    "type": "list",
-    "hint": "检测结果通知给哪些用户或群组。在群里发送 /netcheck 会自动记录该群的UMO",
-    "default": [],
-    "items": {
-      "umo": {
-        "description": "统一消息来源标识(UMO)",
-        "type": "string",
-        "hint": "统一消息来源标识，如 aiocqhttp:GroupMessage:123456 或 aiocqhttp:FriendMessage:123456"
       },
-      "description": {
-        "description": "描述",
-        "type": "string",
-        "hint": "用于标识这个通知目标"
-      }
-    }
-  },
-  "global_settings": {
-    "description": "全局设置",
-    "type": "object",
-    "hint": "插件的全局配置选项",
-    "items": {
       "silent_hours_start": {
         "description": "免打扰开始时间(小时)",
         "type": "int",
-        "hint": "夜间免打扰时段开始时间，0-23，设为-1关闭",
+        "hint": "夜间免打扰时段开始时间，0-23，设为-1关闭免打扰",
         "default": -1
       },
       "silent_hours_end": {
@@ -106,7 +115,37 @@
         "type": "int",
         "hint": "夜间免打扰时段结束时间，0-23",
         "default": 7
-      },
+      }
+    }
+  },
+  "notify_targets": {
+    "description": "通知目标列表",
+    "type": "template_list",
+    "hint": "配置检测结果通知给哪些用户或群组，使用 /net addme 可快速添加",
+    "templates": {
+      "notify_target": {
+        "name": "通知目标",
+        "hint": "一个通知目标",
+        "items": {
+          "umo": {
+            "description": "统一消息来源标识(UMO)",
+            "type": "string",
+            "hint": "统一消息来源标识，如 aiocqhttp:GroupMessage:123456 或 aiocqhttp:FriendMessage:123456"
+          },
+          "description": {
+            "description": "描述",
+            "type": "string",
+            "hint": "用于标识这个通知目标，如 '我的QQ群'、'管理员私聊'"
+          }
+        }
+      }
+    }
+  },
+  "advanced_settings": {
+    "description": "高级设置",
+    "type": "object",
+    "hint": "插件的高级配置选项",
+    "items": {
       "max_history": {
         "description": "历史记录保留数",
         "type": "int",
