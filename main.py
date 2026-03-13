@@ -21,9 +21,10 @@ class NetworkConnectivityPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         
-        # 数据存储路径 - 使用 AstrBot 标准数据目录
-        # 数据目录位于 AstrBot/data/plugin_network_connectivity_check/
-        self.data_dir = Path("data") / "plugin_network_connectivity_check"
+        # 数据存储路径 - 使用 AstrBot 标准插件数据目录
+        # 目录位于 AstrBot/data/plugin_data/network_connectivity_check/
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+        self.data_dir = Path(get_astrbot_plugin_data_path()) / "network_connectivity_check"
         self.state_file = self.data_dir / "state.json"
         self.history_file = self.data_dir / "history.json"
         
@@ -166,6 +167,11 @@ class NetworkConnectivityPlugin(Star):
     
     async def initialize(self):
         """插件初始化 - 启动后台监测任务"""
+        # 幂等保护：如果已经启动过，不再重复初始化
+        if self.running or self.monitor_tasks:
+            logger.warning(f"网络监测插件已经初始化，跳过重复初始化。当前任务数: {len(self.monitor_tasks)}")
+            return
+        
         self.running = True
         targets = self._get_target_config()
         notify_targets = self._get_notify_targets()
@@ -339,51 +345,67 @@ class NetworkConnectivityPlugin(Star):
         return result
     
     async def _check_http(self, url: str, timeout: int, ssl_verify: bool = True) -> tuple[bool, str]:
-        """HTTP 检测，返回 (成功状态, 错误信息)"""
-        last_error = ""
+        """HTTP 检测，返回 (成功状态, 错误信息)，复用 ClientSession"""
         ssl_context = None if ssl_verify else False
+        last_error = ""
         
         try:
-            logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s, SSL验证: {ssl_verify}")
             async with aiohttp.ClientSession() as session:
-                async with session.head(url, timeout=timeout, ssl=ssl_context) as resp:
-                    logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
-                    if 200 <= resp.status < 400:
-                        return True, ""
-                    else:
-                        last_error = f"HTTP 状态码异常: {resp.status}"
-        except asyncio.TimeoutError:
-            last_error = "HTTP 请求超时"
-        except aiohttp.ClientError as e:
-            last_error = f"HTTP 连接错误: {type(e).__name__}"
+                # 先尝试 HEAD 请求
+                try:
+                    logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s, SSL验证: {ssl_verify}")
+                    async with session.head(url, timeout=timeout, ssl=ssl_context) as resp:
+                        logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
+                        if 200 <= resp.status < 400:
+                            return True, ""
+                        else:
+                            last_error = f"HTTP 状态码异常: {resp.status}"
+                except asyncio.TimeoutError:
+                    last_error = "HTTP 请求超时"
+                except aiohttp.ClientError as e:
+                    last_error = f"HTTP 连接错误: {type(e).__name__}"
+                except Exception as e:
+                    last_error = f"HTTP 请求异常: {str(e)[:50]}"
+                
+                # HEAD 失败时尝试 GET
+                try:
+                    logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
+                    async with session.get(url, timeout=timeout, ssl=ssl_context) as resp:
+                        logger.debug(f"HTTP GET 响应状态码: {resp.status}")
+                        if 200 <= resp.status < 400:
+                            return True, ""
+                        else:
+                            return False, f"HTTP 状态码异常: {resp.status}"
+                except asyncio.TimeoutError:
+                    return False, "HTTP 请求超时"
+                except aiohttp.ClientError as e:
+                    return False, f"HTTP 连接被拒绝或无法访问"
+                except Exception as e:
+                    return False, f"HTTP 请求失败: {str(e)[:50]}"
         except Exception as e:
-            last_error = f"HTTP 请求异常: {str(e)[:50]}"
-        
-        # HEAD 失败时尝试 GET
-        try:
-            logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=timeout, ssl=ssl_context) as resp:
-                    logger.debug(f"HTTP GET 响应状态码: {resp.status}")
-                    if 200 <= resp.status < 400:
-                        return True, ""
-                    else:
-                        return False, f"HTTP 状态码异常: {resp.status}"
-        except asyncio.TimeoutError:
-            return False, "HTTP 请求超时"
-        except aiohttp.ClientError as e:
-            return False, f"HTTP 连接被拒绝或无法访问"
-        except Exception as e:
-            return False, f"HTTP 请求失败: {str(e)[:50]}"
+            return False, f"HTTP 会话失败: {str(e)[:50]}"
     
     async def _check_ping(self, host: str, timeout: int) -> tuple[bool, str]:
         """Ping 检测，返回 (成功状态, 错误信息)，支持跨平台"""
         try:
-            # 移除协议头
+            # 移除协议头并解析主机名
             original_host = host
             if host.startswith(("http://", "https://")):
-                host = host.split("://", 1)[1].split("/")[0]
-            if ":" in host:
+                from urllib.parse import urlparse
+                parsed = urlparse(host)
+                host = parsed.hostname or ""
+            elif host.startswith("["):
+                # IPv6 格式 [::1]
+                bracket_end = host.find("]")
+                if bracket_end != -1:
+                    host = host[1:bracket_end]  # 去掉方括号
+            elif ":" in host and host.count(":") > 2:
+                # 可能是 IPv6 地址
+                if not host.startswith("["):
+                    # 为 Ping 命令添加方括号（某些系统需要）
+                    host = host
+            elif ":" in host:
+                # 普通 host:port 格式，去掉端口
                 host = host.split(":")[0]
             
             logger.debug(f"Ping 检测: {host} (原始: {original_host}), 超时: {timeout}s")
@@ -401,14 +423,25 @@ class NetworkConnectivityPlugin(Star):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL
             )
-            await asyncio.wait_for(proc.wait(), timeout=timeout + 2)
-            success = proc.returncode == 0
-            logger.debug(f"Ping 结果: {host} - {'成功' if success else '失败'} (returncode: {proc.returncode})")
-            
-            if success:
-                return True, ""
-            else:
-                return False, f"Ping 失败（主机不可达或请求超时）"
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout + 2)
+                success = proc.returncode == 0
+                logger.debug(f"Ping 结果: {host} - {'成功' if success else '失败'} (returncode: {proc.returncode})")
+                
+                if success:
+                    return True, ""
+                else:
+                    return False, f"Ping 失败（主机不可达或请求超时）"
+            except asyncio.TimeoutError:
+                # 超时后强制终止子进程，避免僵尸进程
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                logger.debug(f"Ping 超时并终止: {host}")
+                return False, "Ping 超时"
         except asyncio.TimeoutError:
             return False, "Ping 超时"
         except Exception as e:
@@ -416,21 +449,45 @@ class NetworkConnectivityPlugin(Star):
             return False, f"Ping 执行失败: {str(e)[:50]}"
     
     async def _check_tcp(self, url: str, timeout: int) -> tuple[bool, str]:
-        """TCP 连接检测，返回 (成功状态, 错误信息)"""
+        """TCP 连接检测，返回 (成功状态, 错误信息)，支持 IPv6"""
         host = ""
         port = 0
         try:
-            # 解析主机和端口
+            # 解析主机和端口，支持 IPv6
             if url.startswith(("http://", "https://")):
-                host = url.split("://", 1)[1].split("/")[0]
-                port = 443 if url.startswith("https://") else 80
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                host = parsed.hostname or ""
+                port = parsed.port or (443 if url.startswith("https://") else 80)
             else:
-                if ":" in url:
-                    host, port_str = url.rsplit(":", 1)
-                    try:
-                        port = int(port_str)
-                    except ValueError:
-                        return False, f"TCP 端口格式非法: '{port_str}'"
+                # 处理 IPv6 格式 [::1]:80 或普通 host:port
+                if url.startswith("["):
+                    # IPv6 格式 [::1]:80
+                    bracket_end = url.find("]")
+                    if bracket_end == -1:
+                        return False, "TCP IPv6 地址格式错误: 缺少闭合方括号"
+                    host = url[:bracket_end + 1]  # 包含方括号
+                    port_part = url[bracket_end + 1:]
+                    if port_part.startswith(":"):
+                        try:
+                            port = int(port_part[1:])
+                        except ValueError:
+                            return False, f"TCP 端口格式非法: '{port_part[1:]}'"
+                    else:
+                        port = 80
+                elif ":" in url:
+                    # 可能是 IPv6 无括号，或普通 host:port
+                    if url.count(":") > 2:
+                        # 大概率是 IPv6 地址没有括号，尝试解析
+                        host = url
+                        port = 80
+                    else:
+                        # 普通 host:port 格式
+                        host, port_str = url.rsplit(":", 1)
+                        try:
+                            port = int(port_str)
+                        except ValueError:
+                            return False, f"TCP 端口格式非法: '{port_str}'"
                 else:
                     host = url
                     port = 80
@@ -532,7 +589,13 @@ class NetworkConnectivityPlugin(Star):
             # ===== 检测失败的情况 =====
             error_msg = result.get("error") or "连接超时或无法访问"
             
-            if notify_on_status_change:
+            # 优先检查"每次失败都通知"（独立于状态变化通知）
+            if notify_on_failure:
+                # 开启了每次失败都通知（不受限制，优先执行）
+                should_notify = True
+                notify_reason = "每次失败通知"
+                message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
+            elif notify_on_status_change:
                 # 开启了状态变化通知
                 # 需要满足：1) 达到阈值；2) 首次达到阈值（状态刚变化 或 连续失败次数刚好等于阈值）
                 if state["consecutive_failures"] >= consecutive_failures_threshold:
@@ -549,11 +612,6 @@ class NetworkConnectivityPlugin(Star):
                 else:
                     logger.debug(f"[{target_name}] 连续失败 {state['consecutive_failures']} "
                                 f"未达到阈值 {consecutive_failures_threshold}，暂不通知")
-            elif notify_on_failure:
-                # 开启了每次失败都通知（不受限制）
-                should_notify = True
-                notify_reason = "每次失败通知"
-                message = f"❌ [{target_name}] 网络连接异常！\n错误: {error_msg}\n已连续失败 {state['consecutive_failures']} 次"
         
         # 发送通知
         if should_notify:
