@@ -26,31 +26,28 @@
             "default": "http"
           },
           "custom_settings": {
-            "description": "自定义设置（可选）",
+            "description": "使用自定义检测参数",
             "type": "bool",
-            "hint": "是否为此目标单独设置检测参数（覆盖全局设置）",
+            "hint": "开启后，下方的检测间隔、超时时间、重试次数将覆盖全局设置",
             "default": false
           },
           "interval": {
-            "description": "检测间隔(秒)",
+            "description": "【自定义】检测间隔(秒)",
             "type": "int",
-            "hint": "覆盖全局设置的检测间隔",
-            "default": 300,
-            "invisible": true
+            "hint": "此目标的检测间隔（仅在"使用自定义检测参数"开启时生效）",
+            "default": 300
           },
           "timeout": {
-            "description": "超时时间(秒)",
+            "description": "【自定义】超时时间(秒)",
             "type": "int",
-            "hint": "覆盖全局设置的超时时间",
-            "default": 10,
-            "invisible": true
+            "hint": "此目标的超时时间（仅在"使用自定义检测参数"开启时生效）",
+            "default": 10
           },
           "retry": {
-            "description": "失败重试次数",
+            "description": "【自定义】失败重试次数",
             "type": "int",
-            "hint": "覆盖全局设置的重试次数",
-            "default": 3,
-            "invisible": true
+            "hint": "此目标的重试次数（仅在"使用自定义检测参数"开启时生效）",
+            "default": 3
           }
         }
       }
