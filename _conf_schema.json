@@ -75,6 +75,12 @@
         "type": "int",
         "hint": "检测失败时的重试次数，设为0则不重试",
         "default": 3
+      },
+      "ssl_verify": {
+        "description": "验证 HTTPS 证书",
+        "type": "bool",
+        "hint": "HTTP检测时是否验证TLS/SSL证书。关闭后可检测自签名证书网站，但存在中间人攻击风险。建议保持开启",
+        "default": true
       }
     }
   },

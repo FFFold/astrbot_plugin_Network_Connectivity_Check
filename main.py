@@ -2,11 +2,12 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-import os
+from typing import Dict, List, Any
+from pathlib import Path
+import platform
 
 import aiohttp
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
@@ -20,13 +21,14 @@ class NetworkConnectivityPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         
-        # 数据存储路径
-        self.data_dir = os.path.join("data", "network_connectivity_check")
-        self.state_file = os.path.join(self.data_dir, "state.json")
-        self.history_file = os.path.join(self.data_dir, "history.json")
+        # 数据存储路径 - 使用 StarTools.get_data_dir() 获取插件数据目录
+        from astrbot.core.utils.t2tools import StarTools
+        self.data_dir = StarTools.get_data_dir("network_connectivity_check")
+        self.state_file = self.data_dir / "state.json"
+        self.history_file = self.data_dir / "history.json"
         
         # 确保数据目录存在
-        os.makedirs(self.data_dir, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         
         # 加载状态和历史记录
         self.target_states = self._load_state()
@@ -38,9 +40,9 @@ class NetworkConnectivityPlugin(Star):
         
     def _load_state(self) -> Dict[str, Any]:
         """加载目标状态"""
-        if os.path.exists(self.state_file):
+        if self.state_file.exists():
             try:
-                with open(self.state_file, 'r', encoding='utf-8') as f:
+                with self.state_file.open('r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载状态文件失败: {e}")
@@ -49,16 +51,16 @@ class NetworkConnectivityPlugin(Star):
     def _save_state(self):
         """保存目标状态"""
         try:
-            with open(self.state_file, 'w', encoding='utf-8') as f:
+            with self.state_file.open('w', encoding='utf-8') as f:
                 json.dump(self.target_states, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存状态文件失败: {e}")
     
     def _load_history(self) -> Dict[str, List[Dict]]:
         """加载检测历史"""
-        if os.path.exists(self.history_file):
+        if self.history_file.exists():
             try:
-                with open(self.history_file, 'r', encoding='utf-8') as f:
+                with self.history_file.open('r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"加载历史文件失败: {e}")
@@ -73,7 +75,7 @@ class NetworkConnectivityPlugin(Star):
                 if len(self.detection_history[target_name]) > max_history:
                     self.detection_history[target_name] = self.detection_history[target_name][-max_history:]
             
-            with open(self.history_file, 'w', encoding='utf-8') as f:
+            with self.history_file.open('w', encoding='utf-8') as f:
                 json.dump(self.detection_history, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存历史文件失败: {e}")
@@ -154,8 +156,12 @@ class NetworkConnectivityPlugin(Star):
         
         # 更新配置
         self.config["notify_targets"] = notify_targets
-        self.config.save_config()
-        logger.info(f"已添加通知目标: {umo} ({description})")
+        # 防护检查：确保 config 对象有 save_config 方法
+        if hasattr(self.config, "save_config"):
+            self.config.save_config()
+            logger.info(f"已添加通知目标: {umo} ({description})")
+        else:
+            logger.warning(f"已添加通知目标到内存，但无法保存配置: {umo}")
         return True
     
     async def initialize(self):
@@ -249,10 +255,14 @@ class NetworkConnectivityPlugin(Star):
         url = target.get("url", "")
         method = target.get("method", "http")
         timeout = target.get("timeout", 10)
-        retry = target.get("retry", 3)
+        retry = max(0, int(target.get("retry", 3)))  # 边界校验：确保 retry >= 0
+        
+        # 获取 SSL 验证配置
+        detection_settings = self.config.get("detection_settings", {})
+        ssl_verify = detection_settings.get("ssl_verify", True)
         
         logger.debug(f"开始检测目标: {target_name}, URL: {url}, 方法: {method}, "
-                    f"超时: {timeout}s, 最大重试: {retry}次")
+                    f"超时: {timeout}s, 最大重试: {retry}次, SSL验证: {ssl_verify}")
         
         # 确保状态字典存在
         if target_name not in self.target_states:
@@ -274,13 +284,14 @@ class NetworkConnectivityPlugin(Star):
         }
         
         # 执行检测
+        attempt = 0
         for attempt in range(retry + 1):
             try:
                 start_time = time.time()
                 
                 if method == "http":
                     logger.debug(f"[{target_name}] HTTP 检测尝试 {attempt + 1}/{retry + 1}")
-                    success, error_msg = await self._check_http(url, timeout)
+                    success, error_msg = await self._check_http(url, timeout, ssl_verify)
                 elif method == "ping":
                     logger.debug(f"[{target_name}] Ping 检测尝试 {attempt + 1}/{retry + 1}")
                     success, error_msg = await self._check_ping(url, timeout)
@@ -327,13 +338,15 @@ class NetworkConnectivityPlugin(Star):
         
         return result
     
-    async def _check_http(self, url: str, timeout: int) -> tuple[bool, str]:
+    async def _check_http(self, url: str, timeout: int, ssl_verify: bool = True) -> tuple[bool, str]:
         """HTTP 检测，返回 (成功状态, 错误信息)"""
         last_error = ""
+        ssl_context = None if ssl_verify else False
+        
         try:
-            logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s")
+            logger.debug(f"HTTP HEAD 请求: {url}, 超时: {timeout}s, SSL验证: {ssl_verify}")
             async with aiohttp.ClientSession() as session:
-                async with session.head(url, timeout=timeout, ssl=False) as resp:
+                async with session.head(url, timeout=timeout, ssl=ssl_context) as resp:
                     logger.debug(f"HTTP HEAD 响应状态码: {resp.status}")
                     if 200 <= resp.status < 400:
                         return True, ""
@@ -350,7 +363,7 @@ class NetworkConnectivityPlugin(Star):
         try:
             logger.debug(f"HTTP HEAD 失败: {last_error}，尝试 GET 请求")
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=timeout, ssl=False) as resp:
+                async with session.get(url, timeout=timeout, ssl=ssl_context) as resp:
                     logger.debug(f"HTTP GET 响应状态码: {resp.status}")
                     if 200 <= resp.status < 400:
                         return True, ""
@@ -364,7 +377,7 @@ class NetworkConnectivityPlugin(Star):
             return False, f"HTTP 请求失败: {str(e)[:50]}"
     
     async def _check_ping(self, host: str, timeout: int) -> tuple[bool, str]:
-        """Ping 检测，返回 (成功状态, 错误信息)"""
+        """Ping 检测，返回 (成功状态, 错误信息)，支持跨平台"""
         try:
             # 移除协议头
             original_host = host
@@ -375,8 +388,16 @@ class NetworkConnectivityPlugin(Star):
             
             logger.debug(f"Ping 检测: {host} (原始: {original_host}), 超时: {timeout}s")
             
+            # 根据平台选择参数
+            if platform.system().lower() == "windows":
+                # Windows: -n 次数, -w 超时(毫秒)
+                ping_cmd = ["ping", "-n", "1", "-w", str(timeout * 1000), host]
+            else:
+                # Linux/macOS: -c 次数, -W 超时(秒)
+                ping_cmd = ["ping", "-c", "1", "-W", str(timeout), host]
+            
             proc = await asyncio.create_subprocess_exec(
-                "ping", "-n", "1", "-w", str(timeout * 1000), host,
+                *ping_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL
             )
@@ -396,6 +417,8 @@ class NetworkConnectivityPlugin(Star):
     
     async def _check_tcp(self, url: str, timeout: int) -> tuple[bool, str]:
         """TCP 连接检测，返回 (成功状态, 错误信息)"""
+        host = ""
+        port = 0
         try:
             # 解析主机和端口
             if url.startswith(("http://", "https://")):
@@ -404,7 +427,10 @@ class NetworkConnectivityPlugin(Star):
             else:
                 if ":" in url:
                     host, port_str = url.rsplit(":", 1)
-                    port = int(port_str)
+                    try:
+                        port = int(port_str)
+                    except ValueError:
+                        return False, f"TCP 端口格式非法: '{port_str}'"
                 else:
                     host = url
                     port = 80

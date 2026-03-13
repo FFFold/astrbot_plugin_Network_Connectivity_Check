@@ -48,8 +48,8 @@ D:\Projects\AstrBot\data\plugins\astrbot_plugin_Network_Connectivity_Check\
   - `aiohttp>=3.8.0` - 异步 HTTP 客户端
   - AstrBot API (`astrbot.api.*`)
 - **检测方式**:
-  - HTTP: `aiohttp` 发送 HEAD/GET 请求
-  - Ping: Windows `ping` 命令 (`asyncio.create_subprocess_exec`)
+  - HTTP: `aiohttp` 发送 HEAD/GET 请求，支持可配置的 SSL 验证
+  - Ping: 跨平台 `ping` 命令（Windows/Linux/macOS 自适应参数）
   - TCP: `asyncio.open_connection` 直接连接端口
 
 ---
@@ -80,9 +80,9 @@ D:\Projects\AstrBot\data\plugins\astrbot_plugin_Network_Connectivity_Check\
 
 **检测方法**
 - `_check_target(target)` - 检测单个目标，返回结果字典
-- `_check_http(url, timeout)` → `(bool, str)` - HTTP 检测，返回(成功, 错误信息)
-- `_check_ping(host, timeout)` → `(bool, str)` - ICMP Ping 检测
-- `_check_tcp(url, timeout)` → `(bool, str)` - TCP 连接检测
+- `_check_http(url, timeout, ssl_verify)` → `(bool, str)` - HTTP 检测，返回(成功, 错误信息)，ssl_verify 控制证书验证
+- `_check_ping(host, timeout)` → `(bool, str)` - ICMP Ping 检测，跨平台支持
+- `_check_tcp(url, timeout)` → `(bool, str)` - TCP 连接检测，端口格式异常处理
 
 **通知逻辑**
 - `_update_target_state(target, result)` - 更新状态并触发通知
@@ -143,16 +143,18 @@ D:\Projects\AstrBot\data\plugins\astrbot_plugin_Network_Connectivity_Check\
 
 ## 数据存储
 
-数据保存在 AstrBot 的 `data/` 目录下：
+数据通过 `StarTools.get_data_dir()` 获取插件专用数据目录，保存在 AstrBot 的数据目录下：
 
 ```
 data/
-├── network_connectivity_check/
-│   ├── state.json      # 目标状态 (last_status, consecutive_failures 等)
-│   └── history.json    # 检测历史记录
+├── network_connectivity_check/          # 插件数据目录
+│   ├── state.json                       # 目标状态 (last_status, consecutive_failures 等)
+│   └── history.json                     # 检测历史记录
 └── config/
     └── astrbot_plugin_network_connectivity_check_config.json  # 配置文件实体
 ```
+
+**注意**: 使用 `pathlib.Path` 对象进行路径操作，符合 AstrBot 框架规范。
 
 ### 状态文件结构
 ```json
@@ -179,6 +181,11 @@ data/
 - 检测方法返回 `(bool, str)` 元组，包含成功状态和详细错误信息
 - 使用 `try/except` 捕获异常，记录详细日志
 - 网络请求设置合理的超时时间
+- 配置操作使用 `hasattr(self.config, "save_config")` 进行防护检查
+
+### 跨平台兼容
+- Ping 命令根据 `platform.system()` 自动选择 Windows/Unix 参数
+- 使用 `pathlib.Path` 处理文件路径，避免硬编码分隔符
 
 ### 通知消息格式
 ```python
