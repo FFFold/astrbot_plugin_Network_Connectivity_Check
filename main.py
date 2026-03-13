@@ -21,10 +21,9 @@ class NetworkConnectivityPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         
-        # 数据存储路径 - 使用 AstrBot 标准插件数据目录
-        # 目录位于 AstrBot/data/plugin_data/network_connectivity_check/
-        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
-        self.data_dir = Path(get_astrbot_plugin_data_path()) / "network_connectivity_check"
+        # 数据存储路径 - 使用 StarTools.get_data_dir() 获取插件数据目录
+        from astrbot.core.star.star_tools import StarTools
+        self.data_dir = StarTools.get_data_dir("network_connectivity_check")
         self.state_file = self.data_dir / "state.json"
         self.history_file = self.data_dir / "history.json"
         
@@ -180,6 +179,7 @@ class NetworkConnectivityPlugin(Star):
         
         if not targets:
             logger.warning("网络监测插件：未配置任何监测目标")
+            self.running = False  # 恢复状态，允许后续重新初始化
             return
         
         # 为每个目标启动监测任务
@@ -189,6 +189,12 @@ class NetworkConnectivityPlugin(Star):
             logger.debug(f"配置目标: {target_name}, URL: {target.get('url')}, "
                         f"方法: {target.get('method')}, 间隔: {interval}s, "
                         f"超时: {target.get('timeout')}s, 重试: {target.get('retry')}次")
+            
+            # 如果同名任务已存在，先取消旧任务（防止重复和幽灵任务）
+            if target_name in self.monitor_tasks:
+                old_task = self.monitor_tasks[target_name]
+                old_task.cancel()
+                logger.warning(f"发现同名监测任务 {target_name}，已取消旧任务")
             
             task = asyncio.create_task(
                 self._monitor_target(target),
@@ -466,7 +472,7 @@ class NetworkConnectivityPlugin(Star):
                     bracket_end = url.find("]")
                     if bracket_end == -1:
                         return False, "TCP IPv6 地址格式错误: 缺少闭合方括号"
-                    host = url[:bracket_end + 1]  # 包含方括号
+                    host = url[1:bracket_end]  # 去掉方括号，只取地址部分
                     port_part = url[bracket_end + 1:]
                     if port_part.startswith(":"):
                         try:
@@ -653,7 +659,7 @@ class NetworkConnectivityPlugin(Star):
                 logger.error(f"发送通知到 {umo} 失败: {e}")
     
     @filter.command_group("net")
-    def net(self):
+    def net(self, event: AstrMessageEvent):
         """网络监测指令组"""
         pass
     
