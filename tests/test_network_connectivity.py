@@ -134,6 +134,23 @@ def test_notification_silent_hours_normalization_uses_defaults_for_out_of_range_
     assert notification_settings["silent_hours_end"] == 7
 
 
+def test_notification_flags_parse_string_and_numeric_boolean_values():
+    plugin = build_plugin(
+        {
+            "notification_settings": {
+                "notify_on_status_change": "false",
+                "notify_on_success": "1",
+                "notify_on_failure": 0,
+            }
+        }
+    )
+
+    notification_settings = plugin._normalize_notification_settings()
+    assert notification_settings["notify_on_status_change"] is False
+    assert notification_settings["notify_on_success"] is True
+    assert notification_settings["notify_on_failure"] is False
+
+
 def test_detection_ssl_verify_parses_string_values():
     false_plugin = build_plugin({"detection_settings": {"ssl_verify": "false"}})
     assert false_plugin._normalize_detection_settings()["ssl_verify"] is False
@@ -188,6 +205,35 @@ def test_normalized_settings_cache_refreshes_after_config_change():
     updated_notification_settings = plugin._normalize_notification_settings()
     assert updated_detection_settings["interval"] == 120
     assert updated_notification_settings["consecutive_failures"] == 5
+
+
+@pytest.mark.asyncio
+async def test_check_target_coerces_invalid_retry_value():
+    plugin = build_plugin()
+    calls = []
+
+    async def fake_check_http(url, timeout, ssl_verify):
+        calls.append((url, timeout, ssl_verify))
+        return True, ""
+
+    async def fake_update_target_state(target, result):
+        return None
+
+    plugin._check_http = fake_check_http
+    plugin._update_target_state = fake_update_target_state
+
+    result = await plugin._check_target(
+        {
+            "name": "site",
+            "url": "https://example.com",
+            "method": "http",
+            "timeout": 5,
+            "retry": "oops",
+        }
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
 
 
 def test_save_history_normalizes_max_history_lower_bound():

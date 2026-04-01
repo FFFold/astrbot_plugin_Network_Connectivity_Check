@@ -157,8 +157,10 @@ class NetworkConnectivityPlugin(Star):
         )
 
         normalized = {
-            "notify_on_status_change": bool(
-                settings.get("notify_on_status_change", True)
+            "notify_on_status_change": self._coerce_bool(
+                settings.get("notify_on_status_change", True),
+                True,
+                "notification_settings.notify_on_status_change",
             ),
             "consecutive_failures": self._coerce_int(
                 settings.get("consecutive_failures", 2),
@@ -166,8 +168,16 @@ class NetworkConnectivityPlugin(Star):
                 "notification_settings.consecutive_failures",
                 minimum=1,
             ),
-            "notify_on_success": bool(settings.get("notify_on_success", False)),
-            "notify_on_failure": bool(settings.get("notify_on_failure", False)),
+            "notify_on_success": self._coerce_bool(
+                settings.get("notify_on_success", False),
+                False,
+                "notification_settings.notify_on_success",
+            ),
+            "notify_on_failure": self._coerce_bool(
+                settings.get("notify_on_failure", False),
+                False,
+                "notification_settings.notify_on_failure",
+            ),
             "silent_hours_start": start,
             "silent_hours_end": end,
         }
@@ -477,7 +487,12 @@ class NetworkConnectivityPlugin(Star):
         url = target.get("url", "")
         method = target.get("method", "http")
         timeout = target.get("timeout", 10)
-        retry = max(0, int(target.get("retry", 3)))  # 边界校验：确保 retry >= 0
+        retry = self._coerce_int(
+            target.get("retry", 3),
+            3,
+            f"targets[{target_name}].retry",
+            minimum=0,
+        )
 
         # 获取 SSL 验证配置
         detection_settings = self._normalize_detection_settings()
