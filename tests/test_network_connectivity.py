@@ -336,6 +336,57 @@ async def test_net_history_supports_time_range_query():
 
 
 @pytest.mark.asyncio
+async def test_net_history_count_supports_values_above_20_up_to_50():
+    plugin = build_plugin()
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": datetime(2026, 4, 1, 0, 0, 0).timestamp() + i,
+                "success": True,
+                "response_time": 100,
+                "error": None,
+            }
+            for i in range(30)
+        ]
+    }
+    event = DummyEvent()
+
+    results = []
+    async for item in plugin.net_history(event, "site", "21"):
+        results.append(item)
+
+    assert len(results) == 1
+    message = results[0]
+    assert "最近21次检测记录" in message
+
+
+@pytest.mark.asyncio
+async def test_net_history_count_above_50_is_clamped_to_50():
+    plugin = build_plugin()
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": datetime(2026, 4, 1, 0, 0, 0).timestamp() + i,
+                "success": True,
+                "response_time": 100,
+                "error": None,
+            }
+            for i in range(60)
+        ]
+    }
+    event = DummyEvent()
+
+    results = []
+    async for item in plugin.net_history(event, "site", "51"):
+        results.append(item)
+
+    assert len(results) == 1
+    message = results[0]
+    assert "最近50次检测记录" in message
+    assert "最近5次检测记录" not in message
+
+
+@pytest.mark.asyncio
 async def test_net_history_time_range_message_mentions_50_item_display_limit():
     plugin = build_plugin()
     plugin.detection_history = {
