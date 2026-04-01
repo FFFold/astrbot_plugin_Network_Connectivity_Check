@@ -106,6 +106,35 @@ def test_parse_history_datetime_supports_date_end_of_day():
     assert (dt.hour, dt.minute, dt.second) == (23, 59, 59)
 
 
+def test_normalized_settings_cache_refreshes_after_config_change():
+    plugin = build_plugin(
+        {
+            "detection_settings": {"interval": 60, "timeout": 8, "retry": 2},
+            "notification_settings": {
+                "notify_on_status_change": True,
+                "consecutive_failures": 2,
+                "notify_on_success": False,
+                "notify_on_failure": False,
+                "silent_hours_start": -1,
+                "silent_hours_end": 7,
+            },
+        }
+    )
+
+    detection_settings = plugin._normalize_detection_settings()
+    notification_settings = plugin._normalize_notification_settings()
+    assert detection_settings["interval"] == 60
+    assert notification_settings["consecutive_failures"] == 2
+
+    plugin.config["detection_settings"]["interval"] = 120
+    plugin.config["notification_settings"]["consecutive_failures"] = 5
+
+    updated_detection_settings = plugin._normalize_detection_settings()
+    updated_notification_settings = plugin._normalize_notification_settings()
+    assert updated_detection_settings["interval"] == 120
+    assert updated_notification_settings["consecutive_failures"] == 5
+
+
 @pytest.mark.asyncio
 async def test_net_history_supports_time_range_query():
     plugin = build_plugin()
@@ -157,3 +186,49 @@ async def test_net_history_rejects_invalid_time_range():
     assert results == [
         "⚠️ 时间格式错误，支持 YYYY-MM-DD、YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS"
     ]
+
+
+@pytest.mark.asyncio
+async def test_net_history_reports_empty_valid_time_range():
+    plugin = build_plugin()
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": datetime(2026, 4, 1, 12, 0, 0).timestamp(),
+                "success": True,
+                "response_time": 120,
+                "error": None,
+            }
+        ]
+    }
+    event = DummyEvent()
+
+    results = []
+    async for item in plugin.net_history(event, "site", "2026-04-02", "2026-04-03"):
+        results.append(item)
+
+    assert results == [
+        "⚠️ 目标 'site' 在 2026-04-02 00:00:00 到 2026-04-03 23:59:59 之间暂无历史记录"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_net_history_rejects_start_after_end():
+    plugin = build_plugin()
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": datetime(2026, 4, 3, 12, 0, 0).timestamp(),
+                "success": True,
+                "response_time": 120,
+                "error": None,
+            }
+        ]
+    }
+    event = DummyEvent()
+
+    results = []
+    async for item in plugin.net_history(event, "site", "2026-04-05", "2026-04-03"):
+        results.append(item)
+
+    assert results == ["⚠️ 开始时间不能晚于结束时间"]

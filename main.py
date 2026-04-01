@@ -40,6 +40,20 @@ class NetworkConnectivityPlugin(Star):
 
         # HTTP session（在 initialize 中创建，复用连接池）
         self.session: aiohttp.ClientSession | None = None
+        self._normalized_detection_settings_cache: tuple[str, dict[str, Any]] | None = (
+            None
+        )
+        self._normalized_notification_settings_cache: (
+            tuple[str, dict[str, Any]] | None
+        ) = None
+
+    def _config_section_cache_key(self, section_name: str) -> str:
+        """为配置片段生成缓存 key，内容变更时自动失效。"""
+        section = self.config.get(section_name, {})
+        try:
+            return json.dumps(section, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            return repr(section)
 
     def _coerce_int(
         self,
@@ -66,8 +80,14 @@ class NetworkConnectivityPlugin(Star):
 
     def _normalize_detection_settings(self) -> dict[str, Any]:
         """获取规范化后的全局检测设置。"""
+        cache_key = self._config_section_cache_key("detection_settings")
+        if self._normalized_detection_settings_cache is not None:
+            cached_key, cached_value = self._normalized_detection_settings_cache
+            if cached_key == cache_key:
+                return cached_value
+
         settings = self.config.get("detection_settings", {})
-        return {
+        normalized = {
             "interval": self._coerce_int(
                 settings.get("interval", 300),
                 300,
@@ -82,9 +102,17 @@ class NetworkConnectivityPlugin(Star):
             ),
             "ssl_verify": bool(settings.get("ssl_verify", True)),
         }
+        self._normalized_detection_settings_cache = (cache_key, normalized)
+        return normalized
 
     def _normalize_notification_settings(self) -> dict[str, Any]:
         """获取规范化后的通知设置。"""
+        cache_key = self._config_section_cache_key("notification_settings")
+        if self._normalized_notification_settings_cache is not None:
+            cached_key, cached_value = self._normalized_notification_settings_cache
+            if cached_key == cache_key:
+                return cached_value
+
         settings = self.config.get("notification_settings", {})
         start = self._coerce_int(
             settings.get("silent_hours_start", -1),
@@ -101,7 +129,7 @@ class NetworkConnectivityPlugin(Star):
             maximum=23,
         )
 
-        return {
+        normalized = {
             "notify_on_status_change": bool(
                 settings.get("notify_on_status_change", True)
             ),
@@ -116,6 +144,8 @@ class NetworkConnectivityPlugin(Star):
             "silent_hours_start": start,
             "silent_hours_end": end,
         }
+        self._normalized_notification_settings_cache = (cache_key, normalized)
+        return normalized
 
     def _parse_history_datetime(self, value: str, is_end: bool = False) -> float | None:
         """解析 history 命令中的时间参数。"""
@@ -167,8 +197,12 @@ class NetworkConnectivityPlugin(Star):
         """保存检测历史"""
         try:
             # 限制历史记录数量
-            max_history = self.config.get("advanced_settings", {}).get(
-                "max_history", 100
+            max_history = self._coerce_int(
+                self.config.get("advanced_settings", {}).get("max_history", 100),
+                100,
+                "advanced_settings.max_history",
+                minimum=1,
+                maximum=10000,
             )
             for target_name in self.detection_history:
                 if len(self.detection_history[target_name]) > max_history:
@@ -520,12 +554,14 @@ class NetworkConnectivityPlugin(Star):
         """HTTP 检测，返回 (成功状态, 错误信息)，复用 ClientSession"""
         ssl_context = None if ssl_verify else False
         last_error = ""
+        should_close_session = False
 
         # 使用全局 session（复用连接池）
         session = self.session
         if session is None or session.closed:
             logger.warning("HTTP session 未初始化或已关闭，创建临时 session")
             session = aiohttp.ClientSession()
+            should_close_session = True
 
         try:
             # 先尝试 HEAD 请求
@@ -563,6 +599,9 @@ class NetworkConnectivityPlugin(Star):
                 return False, f"HTTP 请求失败: {str(e)[:50]}"
         except Exception as e:
             return False, f"HTTP 会话失败: {str(e)[:50]}"
+        finally:
+            if should_close_session and not session.closed:
+                await session.close()
 
     async def _check_ping(self, host: str, timeout: int) -> tuple[bool, str]:
         """Ping 检测，返回 (成功状态, 错误信息)，支持跨平台"""
