@@ -1,6 +1,6 @@
 name: astrbot_plugin_Network_Connectivity_Check
 display_name: 网络连接监测
 desc: 定时监测网络连接状态，支持 HTTP/Ping/TCP 多种检测方式，可用于代理连通性、服务可用性监测。
-version: v1.0.0
+version: v1.1.0
 author: Fold
 repo: https://github.com/FFFold/astrbot_plugin_Network_Connectivity_Check

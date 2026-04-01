@@ -14,7 +14,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 
-@register("network_connectivity_check", "Fold", "网络连接监测插件", "1.0.0")
+@register("network_connectivity_check", "Fold", "网络连接监测插件", "1.1.0")
 class NetworkConnectivityPlugin(Star):
     """网络连接监测插件 - 定时监测网络连接状态，支持多种检测方式"""
 
