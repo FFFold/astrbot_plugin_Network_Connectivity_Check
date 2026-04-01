@@ -98,6 +98,42 @@ def test_get_target_config_normalizes_invalid_values():
     assert targets[0]["retry"] == 2
 
 
+def test_coerce_int_uses_default_for_invalid_and_out_of_range_values():
+    plugin = build_plugin()
+
+    assert (
+        plugin._coerce_int("5", default=1, field_name="test", minimum=1, maximum=10)
+        == 5
+    )
+    assert (
+        plugin._coerce_int(-10, default=1, field_name="test", minimum=1, maximum=10)
+        == 1
+    )
+    assert (
+        plugin._coerce_int(9999, default=1, field_name="test", minimum=1, maximum=10)
+        == 1
+    )
+    assert (
+        plugin._coerce_int("oops", default=7, field_name="test", minimum=1, maximum=10)
+        == 7
+    )
+
+
+def test_notification_silent_hours_normalization_uses_defaults_for_out_of_range_values():
+    plugin = build_plugin(
+        {
+            "notification_settings": {
+                "silent_hours_start": -5,
+                "silent_hours_end": 30,
+            }
+        }
+    )
+
+    notification_settings = plugin._normalize_notification_settings()
+    assert notification_settings["silent_hours_start"] == -1
+    assert notification_settings["silent_hours_end"] == 7
+
+
 def test_parse_history_datetime_supports_date_end_of_day():
     plugin = build_plugin()
     parsed = plugin._parse_history_datetime("2026-04-01", is_end=True)
@@ -133,6 +169,67 @@ def test_normalized_settings_cache_refreshes_after_config_change():
     updated_notification_settings = plugin._normalize_notification_settings()
     assert updated_detection_settings["interval"] == 120
     assert updated_notification_settings["consecutive_failures"] == 5
+
+
+def test_save_history_normalizes_max_history_lower_bound():
+    plugin = build_plugin({"advanced_settings": {"max_history": -5}})
+    plugin._save_history = NetworkConnectivityPlugin._save_history.__get__(
+        plugin, NetworkConnectivityPlugin
+    )
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": i,
+                "response_time": 1,
+                "success": True,
+                "error": None,
+            }
+            for i in range(5)
+        ]
+    }
+
+    plugin._save_history()
+
+    assert len(plugin.detection_history["site"]) == 5
+    assert (
+        plugin._coerce_int(
+            -5, 100, "advanced_settings.max_history", minimum=1, maximum=10000
+        )
+        == 100
+    )
+
+
+def test_save_history_normalizes_max_history_upper_bound():
+    plugin = build_plugin({"advanced_settings": {"max_history": 1000000}})
+    plugin._save_history = NetworkConnectivityPlugin._save_history.__get__(
+        plugin, NetworkConnectivityPlugin
+    )
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": i,
+                "response_time": 1,
+                "success": True,
+                "error": None,
+            }
+            for i in range(10005)
+        ]
+    }
+
+    plugin._save_history()
+
+    assert len(plugin.detection_history["site"]) == 100
+    assert plugin.detection_history["site"][0]["timestamp"] == 9905
+    assert (
+        plugin._coerce_int(
+            1000000,
+            100,
+            "advanced_settings.max_history",
+            minimum=1,
+            maximum=10000,
+        )
+        == 100
+    )
 
 
 @pytest.mark.asyncio
