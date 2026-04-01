@@ -134,6 +134,25 @@ def test_notification_silent_hours_normalization_uses_defaults_for_out_of_range_
     assert notification_settings["silent_hours_end"] == 7
 
 
+def test_detection_ssl_verify_parses_string_values():
+    false_plugin = build_plugin({"detection_settings": {"ssl_verify": "false"}})
+    assert false_plugin._normalize_detection_settings()["ssl_verify"] is False
+
+    true_plugin = build_plugin({"detection_settings": {"ssl_verify": "yes"}})
+    assert true_plugin._normalize_detection_settings()["ssl_verify"] is True
+
+    fallback_plugin = build_plugin({"detection_settings": {"ssl_verify": "maybe"}})
+    assert fallback_plugin._normalize_detection_settings()["ssl_verify"] is True
+
+
+def test_detection_ssl_verify_accepts_numeric_boolean_values():
+    false_plugin = build_plugin({"detection_settings": {"ssl_verify": 0}})
+    assert false_plugin._normalize_detection_settings()["ssl_verify"] is False
+
+    true_plugin = build_plugin({"detection_settings": {"ssl_verify": 1}})
+    assert true_plugin._normalize_detection_settings()["ssl_verify"] is True
+
+
 def test_parse_history_datetime_supports_date_end_of_day():
     plugin = build_plugin()
     parsed = plugin._parse_history_datetime("2026-04-01", is_end=True)
@@ -268,6 +287,31 @@ async def test_net_history_supports_time_range_query():
     assert "时间范围内共 2 条记录" in message
     assert "04-03 12:00:00" in message
     assert "04-08 12:00:00" not in message
+
+
+@pytest.mark.asyncio
+async def test_net_history_time_range_message_mentions_50_item_display_limit():
+    plugin = build_plugin()
+    plugin.detection_history = {
+        "site": [
+            {
+                "timestamp": datetime(2026, 4, 1, 0, 0, 0).timestamp() + i,
+                "success": True,
+                "response_time": 100,
+                "error": None,
+            }
+            for i in range(60)
+        ]
+    }
+    event = DummyEvent()
+
+    results = []
+    async for item in plugin.net_history(event, "site", "2026-04-01", "2026-04-01"):
+        results.append(item)
+
+    assert len(results) == 1
+    message = results[0]
+    assert "时间范围内共 60 条记录，当前仅展示最近 50 条" in message
 
 
 @pytest.mark.asyncio

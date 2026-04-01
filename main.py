@@ -78,6 +78,29 @@ class NetworkConnectivityPlugin(Star):
             return default
         return result
 
+    def _coerce_bool(self, value: Any, default: bool, field_name: str) -> bool:
+        """将配置值规范化为布尔值，字符串需显式解析。"""
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, int):
+            if value in (0, 1):
+                return bool(value)
+
+        if isinstance(value, float):
+            if value in (0.0, 1.0):
+                return bool(value)
+
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "off"}:
+                return False
+
+        logger.warning(f"配置项 {field_name} 非法，使用默认值 {default}: {value}")
+        return default
+
     def _normalize_detection_settings(self) -> dict[str, Any]:
         """获取规范化后的全局检测设置。"""
         cache_key = self._config_section_cache_key("detection_settings")
@@ -100,7 +123,11 @@ class NetworkConnectivityPlugin(Star):
             "retry": self._coerce_int(
                 settings.get("retry", 3), 3, "detection_settings.retry", minimum=0
             ),
-            "ssl_verify": bool(settings.get("ssl_verify", True)),
+            "ssl_verify": self._coerce_bool(
+                settings.get("ssl_verify", True),
+                True,
+                "detection_settings.ssl_verify",
+            ),
         }
         self._normalized_detection_settings_cache = (cache_key, normalized)
         return normalized
@@ -1130,13 +1157,13 @@ class NetworkConnectivityPlugin(Star):
                     f"⚠️ 目标 '{target_name}' 在 {start_str} 到 {end_str} 之间暂无历史记录"
                 )
                 return
-            recent = filtered_history[-20:]
+            recent = filtered_history[-50:]
             range_text = (
                 f"{datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M:%S')}"
                 f" ~ {datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M:%S')}"
             )
             messages = [
-                f"📈 {target_name} - 时间范围内共 {len(filtered_history)} 条记录\n范围: {range_text}\n"
+                f"📈 {target_name} - 时间范围内共 {len(filtered_history)} 条记录，当前仅展示最近 {len(recent)} 条\n范围: {range_text}\n"
                 + "=" * 30
             ]
         else:
