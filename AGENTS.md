@@ -1,241 +1,225 @@
-# AGENTS.md - 网络连接监测插件
+# AGENTS.md
 
-## 项目概述
+## Purpose
 
-这是一个用于 **AstrBot** 的插件，提供定时网络连接监测功能，支持多种检测方式和灵活的通知策略。
+This repository contains an AstrBot plugin that monitors network connectivity on a schedule.
+Use this file as the working guide for coding agents operating in this repo.
 
-### 基本信息
-- **名称**: `astrbot_plugin_network_connectivity_check`
-- **显示名称**: 网络连接监测插件
-- **版本**: v1.0.0
-- **作者**: Fold
-- **仓库**: https://github.com/FFFold/astrbot_plugin_Network_Connectivity_Check
-- **许可证**: MIT
+The codebase is small and centered on `main.py`. Prefer minimal, local changes over broad refactors.
 
-### 核心功能
-1. **多种检测方式**: HTTP 请求、ICMP Ping、TCP 连接
-2. **定时监测**: 后台自动运行，可配置检测间隔
-3. **智能通知**: 
-   - 状态变化时通知（失败→成功 或 成功→失败）
-   - 连续失败阈值（防误报）
-   - 夜间免打扰时段
-4. **多目标管理**: 同时监测多个目标，独立配置
-5. **历史记录**: 保存检测历史，便于分析网络状况
+## Repository Shape
 
----
+- `main.py`: plugin entrypoint and almost all runtime logic.
+- `_conf_schema.json`: WebUI config schema.
+- `metadata.yaml`: plugin metadata.
+- `requirements.txt`: runtime dependencies.
+- `README.md`: user-facing documentation.
+- `zhdocs/`: AstrBot reference docs, useful for framework behavior.
 
-## 文件结构
+## Project Facts
 
-```
-D:\Projects\AstrBot\data\plugins\astrbot_plugin_Network_Connectivity_Check\
-├── main.py                 # 主插件代码 (754行)
-├── _conf_schema.json       # 配置模式定义 (WebUI可视化配置)
-├── metadata.yaml           # 插件元数据
-├── requirements.txt        # 依赖: aiohttp>=3.8.0
-├── README.md               # 详细使用文档
-├── LICENSE                 # MIT许可证
-├── AGENTS.md              # 本文件
-├── .gitignore             # Git忽略配置
-└── __pycache__/           # Python缓存
-```
+- Language: Python.
+- Framework: AstrBot plugin system.
+- Runtime style: asyncio-first.
+- Main dependency: `aiohttp>=3.8.0`.
+- Plugin class: `NetworkConnectivityPlugin` in `main.py`.
+- Supported checks today: HTTP, Ping, TCP.
+- Persistent state is stored via `StarTools.get_data_dir(...)`.
 
----
+## Rule Files Present
 
-## 技术栈
+No repository-local Cursor rules were found:
 
-- **框架**: AstrBot 插件系统 (基于 Python asyncio)
-- **核心依赖**: 
-  - `aiohttp>=3.8.0` - 异步 HTTP 客户端
-  - AstrBot API (`astrbot.api.*`)
-- **检测方式**:
-  - HTTP: `aiohttp` 发送 HEAD/GET 请求，支持可配置的 SSL 验证
-  - Ping: 跨平台 `ping` 命令（Windows/Linux/macOS 自适应参数）
-  - TCP: `asyncio.open_connection` 直接连接端口
+- `.cursor/rules/`: not present
+- `.cursorrules`: not present
 
----
+No repository-local Copilot instructions were found:
 
-## 核心类和方法
+- `.github/copilot-instructions.md`: not present
 
-### NetworkConnectivityPlugin (Star)
+If any of those files are added later, treat them as additional constraints and update this file.
 
-主插件类，继承自 AstrBot 的 `Star` 基类。
+## Setup Commands
 
-#### 关键属性
-- `config`: 插件配置 (从 `_conf_schema.json` 解析)
-- `target_states`: 目标状态字典 `{target_name: {...}}`
-- `detection_history`: 检测历史 `{target_name: [results]}`
-- `monitor_tasks`: 后台监测任务 `{target_name: asyncio.Task}`
-
-#### 主要方法
-
-**初始化与生命周期**
-- `__init__(context, config)` - 初始化插件，加载状态和历史
-- `initialize()` - 启动所有监测任务
-- `terminate()` - 停止所有任务，保存数据
-
-**配置获取**
-- `_get_target_config()` - 获取处理后的目标配置（合并全局和自定义设置）
-- `_get_notify_targets()` - 获取通知目标列表
-- `_get_notification_settings()` - 获取通知全局设置
-
-**检测方法**
-- `_check_target(target)` - 检测单个目标，返回结果字典
-- `_check_http(url, timeout, ssl_verify)` → `(bool, str)` - HTTP 检测，返回(成功, 错误信息)，ssl_verify 控制证书验证
-- `_check_ping(host, timeout)` → `(bool, str)` - ICMP Ping 检测，跨平台支持
-- `_check_tcp(url, timeout)` → `(bool, str)` - TCP 连接检测，端口格式异常处理
-
-**通知逻辑**
-- `_update_target_state(target, result)` - 更新状态并触发通知
-- `_send_notification(message)` - 发送通知到所有配置目标
-- `_is_silent_hours()` - 检查是否在免打扰时段
-
-**后台任务**
-- `_monitor_target(target)` - 单个目标的监测循环
-
----
-
-## 指令列表
-
-所有指令都在 `/net` 指令组下：
-
-| 指令 | 用法 | 功能 |
-|------|------|------|
-| `check` | `/net check [目标名]` | 手动执行一次检测 |
-| `status` | `/net status` | 查看所有目标当前状态 |
-| `history` | `/net history <目标> [数量]` | 查看检测历史 |
-| `addme` | `/net addme [描述]` | 添加当前聊天到通知列表 |
-
----
-
-## 配置说明
-
-配置通过 `_conf_schema.json` 定义，在 AstrBot WebUI 中可视化配置。
-
-### 配置项结构
-
-```json
-{
-  "targets": [...],              // template_list - 监测目标
-  "detection_settings": {...},   // object - 全局检测参数
-  "notification_settings": {...},// object - 通知策略
-  "notify_targets": [...],       // template_list - 通知目标
-  "advanced_settings": {...}     // object - 高级设置
-}
-```
-
-### 关键配置详解
-
-**notification_settings 通知策略**
-
-| 配置项 | 类型 | 默认 | 说明 |
-|--------|------|------|------|
-| `notify_on_status_change` | bool | true | 状态变化时通知（推荐开启） |
-| `notify_on_success` | bool | false | 每次成功都通知（会刷屏） |
-| `notify_on_failure` | bool | false | 每次失败都通知（会刷屏） |
-| `consecutive_failures` | int | 2 | 状态变化通知的连续失败阈值 |
-
-**通知逻辑详解**:
-- **成功→失败**: 需连续失败达到阈值才通知（防误报）
-- **失败→成功**: 立即通知（恢复通知）
-- **每次成功/失败通知**: 独立开关，不受阈值限制
-
----
-
-## 数据存储
-
-数据通过 `StarTools.get_data_dir()` 获取插件专用数据目录，保存在 AstrBot 的数据目录下：
-
-```
-data/
-├── network_connectivity_check/          # 插件数据目录
-│   ├── state.json                       # 目标状态 (last_status, consecutive_failures 等)
-│   └── history.json                     # 检测历史记录
-└── config/
-    └── astrbot_plugin_network_connectivity_check_config.json  # 配置文件实体
-```
-
-**注意**: 使用 `pathlib.Path` 对象进行路径操作，符合 AstrBot 框架规范。
-
-### 状态文件结构
-```json
-{
-  "目标名称": {
-    "last_status": true/false/null,
-    "consecutive_failures": 0,
-    "last_check_time": 1234567890,
-    "last_response_time": 123.45
-  }
-}
-```
-
----
-
-## 开发规范
-
-### 代码风格
-- 使用 Python 类型注解 (`typing.Dict`, `typing.List` 等)
-- 异步编程：`async/await` 模式
-- 日志：使用 `astrbot.api.logger` (支持 debug/info/warning/error 级别)
-
-### 错误处理
-- 检测方法返回 `(bool, str)` 元组，包含成功状态和详细错误信息
-- 使用 `try/except` 捕获异常，记录详细日志
-- 网络请求设置合理的超时时间
-- 配置操作使用 `hasattr(self.config, "save_config")` 进行防护检查
-
-### 跨平台兼容
-- Ping 命令根据 `platform.system()` 自动选择 Windows/Unix 参数
-- 使用 `pathlib.Path` 处理文件路径，避免硬编码分隔符
-
-### 通知消息格式
-```python
-# 成功恢复
-"✅ [目标名] 网络已恢复正常！\n响应时间: XXms\n（已从异常状态恢复）"
-
-# 异常（达到阈值）
-"❌ [目标名] 网络连接异常！\n错误: 具体错误信息\n已连续失败 X 次"
-```
-
----
-
-## 使用场景
-
-1. **服务器监控**: 监测服务器外网连通性
-2. **网站可用性**: 监测网站服务状态
-3. **网络质量分析**: 通过历史记录分析响应时间趋势
-
----
-
-## 依赖安装
+There is no dedicated build system in this repo. Typical setup is:
 
 ```bash
-pip install aiohttp>=3.8.0
+pip install -r requirements.txt
+pip install ruff pytest
 ```
 
-或在 AstrBot 中自动安装（通过 `requirements.txt`）
+If validating inside a larger AstrBot checkout, also install AstrBot's dependencies there.
 
----
+## Build, Lint, And Test Commands
 
-## 开发建议
+### Format
 
-### 添加新的检测方式
-1. 在 `_check_target` 中添加新方法分支
-2. 实现对应的 `_check_<method>` 方法，返回 `(bool, str)`
-3. 在 `_conf_schema.json` 的 `method` options 中添加新选项
+```bash
+ruff format .
+ruff format main.py
+```
 
-### 修改通知逻辑
-- 主要逻辑在 `_update_target_state` 方法中
-- 注意三个通知开关的独立性和优先级
+### Lint
 
-### 调试技巧
-- 开启 DEBUG 级别日志查看详细检测过程
-- 使用 `notify_on_success` 和 `notify_on_failure` 查看每次检测结果
-- 查看 `data/network_connectivity_check/` 下的状态和历史文件
+No local Ruff config file is present, but Ruff is the preferred linter.
 
----
+```bash
+ruff check .
+ruff check main.py
+ruff check . --fix
+```
 
-## 相关资源
+### Tests
 
-- [AstrBot 主仓库](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot 插件开发文档](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [aiohttp 文档](https://docs.aiohttp.org/)
+Important: this repo currently has no `tests/` directory and no discovered automated test suite.
+Do not claim tests passed unless you actually add and run them.
+
+If tests are added later, use `pytest`:
+
+```bash
+pytest
+pytest tests/test_network_connectivity.py
+pytest tests/test_network_connectivity.py::test_http_check_success
+pytest -k http
+```
+
+Preferred single-test pattern for reports:
+
+```bash
+pytest path/to/test_file.py::test_name
+```
+
+### Lightweight Validation
+
+When there are no tests, use:
+
+```bash
+python -m py_compile main.py
+```
+
+Manual AstrBot validation can exercise `/net check`, `/net status`, `/net history`, and `/net addme`.
+
+## Verification Order
+
+For a normal change, prefer:
+
+1. `ruff format .`
+2. `ruff check .`
+3. `python -m py_compile main.py`
+4. Manual plugin validation in AstrBot if relevant
+
+If tests are introduced, run the smallest relevant `pytest` command first.
+
+## Code Style Guidelines
+
+### General
+
+- Keep changes minimal and local.
+- Preserve the single-file structure unless the user explicitly wants refactoring.
+- Prefer straightforward control flow over new abstractions.
+- Follow existing AstrBot plugin patterns already present in `main.py`.
+- Add comments only when logic is genuinely non-obvious.
+
+### Imports
+
+- Keep imports at module top unless a local import avoids unnecessary dependency cost or circularity.
+- Prefer standard library imports first, then third-party imports, then AstrBot imports.
+- Match the surrounding style when editing an existing block.
+- Avoid unused imports.
+- Local `urllib.parse` imports are acceptable for one-method URL parsing helpers.
+
+### Formatting And Types
+
+- Use Ruff formatting defaults.
+- Keep lines readable; do not compress complex logic into one-liners.
+- Preserve blank lines between logical sections.
+- Use type hints on new or modified functions.
+- Match the repo's mixed typing style: `Dict`, `List`, `Any`, built-in generics, and `|` unions all appear.
+- Do not churn the whole file just to modernize typing syntax.
+- Preserve tuple return contracts for check helpers like `(success, error_message)`.
+
+### Naming
+
+- Class names: `PascalCase`.
+- Functions and methods: `snake_case`.
+- Internal helpers: leading underscore, e.g. `_check_http`.
+- Use short but descriptive locals such as `target_name`, `notify_targets`, and `error_msg`.
+- Keep config keys aligned with `_conf_schema.json`.
+
+### Async And Runtime
+
+- Keep network and subprocess work async.
+- Use `async def` for lifecycle methods and handlers.
+- Reuse `aiohttp.ClientSession` where possible.
+- Await cleanup of tasks and sessions during shutdown.
+- Do not introduce blocking libraries like `requests`.
+
+### AstrBot Conventions
+
+- The plugin entry file must remain `main.py`.
+- The plugin entry class must inherit from `Star`.
+- Command handlers should remain methods on the plugin class.
+- Use decorators from `astrbot.api.event.filter`.
+- Use `yield event.plain_result(...)` for normal command replies.
+- Use `self.context.send_message(...)` for proactive notifications.
+- Use `astrbot.api.logger`, not Python's `logging` module.
+
+### Config And Data
+
+- Treat config as user-controlled and potentially incomplete.
+- Access nested config with `.get(..., default)`.
+- If you add config fields, update `_conf_schema.json`, README examples, and runtime defaults together.
+- When mutating config, preserve the existing `hasattr(self.config, "save_config")` guard pattern.
+- Store plugin data in AstrBot-managed data paths, not in the source tree.
+- Use `pathlib.Path` for file operations.
+- Keep persisted JSON human-readable with indentation.
+- Limit history growth consistently with `advanced_settings.max_history`.
+
+### Error Handling And Logging
+
+- Fail gracefully; one bad target should not crash the plugin.
+- Wrap I/O, network, and subprocess operations in `try/except`.
+- Prefer specific exceptions when practical; use broad `except Exception` only at defensive boundaries.
+- Return useful error strings, but avoid excessively long exception text.
+- Preserve `asyncio.CancelledError` behavior.
+- Use `logger.debug` for noisy diagnostics, `logger.info` for lifecycle/high-level operations, `logger.warning` for recoverable problems, and `logger.error` for real failures.
+
+### Behavior-Specific Guidance
+
+- Preserve the `/net` command group structure.
+- Keep chat output concise and readable.
+- Preserve notification semantics: recovery notifications are immediate; failure state-change notifications honor the configured consecutive-failure threshold; per-success and per-failure notifications are independent toggles.
+- Ping behavior must remain cross-platform.
+- Use safe subprocess argument lists, never shell-built ping commands.
+- Keep host and port validation strong enough to avoid malformed parsing or command injection.
+
+## Documentation Expectations
+
+- If behavior changes, update `README.md`.
+- If metadata changes, update `metadata.yaml`.
+- If config behavior changes, update `_conf_schema.json` and README examples together.
+- Keep this `AGENTS.md` in sync with actual repo practice.
+
+## Practical Guidance For Agents
+
+- Read `main.py` before making assumptions; nearly all behavior lives there.
+- Search for an existing helper before adding a new one.
+- Prefer modifying existing check, notification, or command flow instead of creating parallel paths.
+- Do not invent a test suite or CI setup in descriptions unless you actually add it.
+- If you add tests, mention the exact single-test invocation in your final response.
+
+## Current Gaps
+
+- No local automated tests are present today.
+- No local Ruff config file is present today.
+- No local type-checker config is present today.
+
+## Preferred Final Checklist
+
+```bash
+ruff format .
+ruff check .
+python -m py_compile main.py
+```
+
+If any command cannot be run, say so explicitly and explain why.
